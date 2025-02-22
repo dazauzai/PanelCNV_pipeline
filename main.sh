@@ -1,7 +1,7 @@
 script_dir="$(dirname "$(readlink -f "$0")")"
-dbSNP="/workspace/dbSNP151.hg38-commonSNP_minFreq5Perc_with_CHR.vcf.gz"
+z=0.1
 # 解析输入参数
-while getopts "b:o:r:n:t:d:e:P:" opt; do
+while getopts "b:o:r:n:t:d:e:P:g:" opt; do
     case $opt in
         b) b=${OPTARG} ;;  # 输入目录
         o) o=${OPTARG} ;;  # 输出目录
@@ -11,7 +11,9 @@ while getopts "b:o:r:n:t:d:e:P:" opt; do
         d) d=${OPTARG} ;;
         e) e=${OPTARG} ;;
         P) P=${OPTARG} ;;
-        *) echo "echo "Usage: $0 -b <bam_directory> -o <output_dir> -r <reference> -n <normal_bam_dir> -t <target_bed_file> -d <dbSNP_for_control_freec> -e <exon_bed> -P <PON_file_for_cnvkit>"" >&2
+        g) g=${OPTARG} ;;
+        z) z=${OPTARG} ;;
+        *) echo "echo "Usage: $0 -b <bam_directory> -o <output_dir> -r <reference> -n <normal_bam_dir> -t <target_bed_file> -d <dbSNP_for_control_freec> -e <exon_bed> -P <PON_file_for_cnvkit> -z <abs breakpoint for cnv-z filter>"" >&2
            exit 1 ;;
     esac
 done
@@ -35,6 +37,14 @@ check_mandatory_parameters() {
         echo "Error: Required file (-t) is not provided. Please specify the required file."
         exit 1
     fi
+
+    # 如果选择使用 Control-FREEC，则检查 dbSNP 参数（-d）
+    if [[ "${run_tools[control_freec_without_control]}" == "y" || "${run_tools[control_freec_with_control]}" == "y" ]]; then
+        if [[ -z "$d" ]]; then
+            echo "Error: dbSNP file (-d) is required for Control-FREEC but not provided. Please specify the path to the dbSNP file."
+            exit 1
+        fi
+    fi
 }
 # 检查文件是否存在，并验证扩展名
 check_file() {
@@ -50,7 +60,6 @@ check_file() {
         fi
     fi
 }
-
 # 预检 timer.sh
 echo "Pre-checking timer.sh..."
 bash ${script_dir}/script/timer.sh -a "test" -b 0 -C
@@ -95,6 +104,8 @@ mkdir -p ${o}
 check_parameters() {
     check_directory "$b" # 检查输入目录
     check_directory "$n" # 检查normal bam目录
+    check_directory "$d2" # 检查dbSNP2目录
+
     check_file "$r" ".fasta" # 检查参考基因组
     check_file "$t" ".bed"   # 检查BED文件
     check_file "$d" ".vcf"   # 检查VCF文件
@@ -114,7 +125,6 @@ else
     echo "please give the paramter -o for output dir"
     exit
 fi
-
 for bam_file in "${bam_dir}"/*.bam; do
     if [[ -f "$bam_file" ]]; then
         sample_name=$(basename "${bam_file}" .bam)
@@ -217,6 +227,13 @@ if [[ "${run_tools[cnvkit_without_normal]}" == "y" ]]; then
     done
     temp=${script_dir}/temp
     bash ${script_dir}/script/timer.sh -a "cnvkit_without_normal" -b ${batch} | tee -a "${general_log}"
+    mkdir -p "${o}/cnvkit_without_normal/cns"
+
+    # 查找并复制所有 .cns 文件到指定目录
+    echo "Finding and copying .cns files to ${o}/cnvkit_without_normal/cns"
+    find "${o}/cnvkit_without_normal" -type f -name "*.cns" -exec cp {} "${o}/cnvkit_without_normal/cns/" \;
+    mkdir -p ${o}/cnvkit_without_normal/cohort
+    Rscript ${script_dir}/script/cnvkit_cohort_generator.R --cns ${o}/cnvkit_without_normal/cns/ --temp ${temp} --gene_name ${g} --out ${o}/cnvkit_without_normal/cohort/cnvkit_without_cohort.bed
 else
     echo "Skipping cnvkit_without_normal..."
 fi
@@ -303,6 +320,13 @@ EOF
         fi
     done
     bash ${script_dir}/script/timer.sh -a "control_freec_without_control" -b ${batch} | tee -a "${general_log}"
+    mkdir -p "${o}/control_freec_without/CNVs"
+
+    # 查找并复制所有 .cns 文件到指定目录
+    echo "Finding and copying CNVs files to ${o}/control_freec_without/CNVs"
+    find "${o}/control_freec/without_normal" -type f -name "*CNVs" -exec cp {} "${o}/control_freec_without/CNVs/" \;
+    mkdir -p ${o}/control_freec_without/cohort
+    Rscript ${script_dir}/script/control_freec_cohort_generator.R --cns ${o}/control_freec_without/CNVs/ --temp ${temp} --gene_name ${g} --out ${o}/control_freec_without/cohort/control_freec_without_cohort.bed
 else
     echo "Skipping control_freec_without_control..."
 fi
@@ -417,6 +441,13 @@ EOF
         fi
     done
     bash ${script_dir}/script/timer.sh -a "control_freec_with_control" -b ${batch} | tee -a ${general_log}
+    mkdir -p "${o}/control_freec_with/CNVs"
+
+    # 查找并复制所有 .cns 文件到指定目录
+    echo "Finding and copying CNVs files to ${o}/control_freec_with/CNVs"
+    find "${o}/control_freec/with_normal" -type f -name "*CNVs" -exec cp {} "${o}/control_freec_with/CNVs/" \;
+    mkdir -p ${o}/control_freec_with/cohort
+    Rscript ${script_dir}/script/control_freec_cohort_generator.R --cns ${o}/control_freec_with/CNVs/ --temp ${temp} --gene_name ${g} --out ${o}/control_freec_with/cohort/control_freec_with_cohort.bed
 else
     echo "Skipping control_freec_with_control..."
 fi
@@ -462,6 +493,13 @@ if [[ "${run_tools[cnvkit_with_normal]}" == "y" ]]; then
         bash ${script_dir}/script/cnvkit_withnormal.sh -b ${bam} -o ${output_dir}/cnvkit_with_normal/${prefix_cnvkit} -m ${cnvkit_method} -t ${t} -r ${r} -f ${f_option} -e ${temp_cnvkit_withnormal} >> ${cnvkit_with_normal_log} 2>&1
     done
     bash ${script_dir}/script/timer.sh -a "cnvkit_withnormal" -b ${batch} | tee -a ${general_log}
+    mkdir -p "${o}/cnvkit_with_normal/cns"
+
+    # 查找并复制所有 .cns 文件到指定目录
+    echo "Finding and copying .cns files to ${o}/cnvkit_with_normal/cns"
+    find "${o}/cnvkit_with_normal" -type f -name "*.cns" -exec cp {} "${o}/cnvkit_with_normal/cns/" \;
+    mkdir -p ${o}/cnvkit_with_normal/cohort
+    Rscript ${script_dir}/scrip/cnvkit_cohort_generator.R --cns ${o}/cnvkit_with_normal/cns/ --temp ${temp} --out ${o}/cnvkit_with_normal/cohort/cnvkit_withnormal_cohort.bed --gene_name ${g}
 else
     echo "Skipping cnvkit_with_normal..."
 fi
@@ -482,14 +520,15 @@ if [[ "${run_tools[cnv_z]}" == "y" ]]; then
     for temp in ./*.csv ;do
         echo "generate standard output file for cnv_z without filter via mean process"
         prefix_cnvz=$(basename ${temp} .csv)
-        echo "Rscript ${script_dir}/script/filter.R  ${temp} ${output_dir}/cnv-z/mean_filter/${prefix_cnvz}"
-        Rscript ${script_dir}/script/filter.R  ${temp} ${output_dir}/cnv-z/mean_filter/${prefix_cnvz} >> ${cnv_z_log} 2>&1
+        echo "Rscript ${script_dir}/script/filter.R  ${temp} ${output_dir}/cnv-z/mean_filter/${prefix_cnvz} ${z}"
+        Rscript ${script_dir}/script/filter.R  ${temp} ${output_dir}/cnv-z/mean_filter/${prefix_cnvz} ${z} >> ${cnv_z_log} 2>&1
     done
     #default_filter
     echo "Using the default filter of CNV-Z"
     mkdir -p "${output_dir}"/cnv-z/default_filter
     julia -t 8 ${script_dir}/script/cnvz_default_filter.jl ${e} "${output_dir}"/cnv-z "${output_dir}"/cnv-z/default_filter >> ${cnv_z_log} 2>&1
     bash ${script_dir}/script/timer.sh -a "cnv_z" -b ${batch} | tee -a ${general_log}
+    Rscript ${script_dir}/script/cnv-z_cohort_generator.R --cns "${output_dir}"/cnv-z/mean_filter --temp ${temp} --out "${output_dir}"/cnv-z/joint --gene_name ${g}
 else
     echo "Skipping CNV-Z..."
 fi
@@ -555,31 +594,23 @@ if [[ "${run_tools[decon]}" == "y" ]]; then
     echo "Checking the environment for decon..."
     
     # 调用 R 脚本检查和安装依赖
-    Rscript "${script_dir}/script/check_env.R" decon
+    Rscript ${script_dir}/script/check_env.R decon
     decon_log=${temp}/decon.log
     touch ${decon_log}
     > ${decon_log}
     echo -e "perform decon analysis with bed file : ${t}"
     mkdir -p ${output_dir}/decon/plot
-    echo "Rscript ${script_dir}/script/decon_step1.R --bams ${bam_dir} \
+
+    Rscript ${script_dir}/script/decon_step1.R --bams ${bam_dir} \
                         --bed ${t} \
                         --fasta ${r} \
-                        --out ${temp}/output_counts" >> ${decon_log}
-    Rscript ${script_dir}/script/decon_step1.R --bams ${bam_dir} \
-                        --bed ${e} \
-                        --fasta ${r} \
                         --out ${temp}/output >> ${decon_log} 2>&1
-    echo "Rscript ${script_dir}/script/decon_step2.R --RData ${temp}/output_counts.RData \
-                        --out ${output_dir}/decon \
-                        --plotFolder ${output_dir}/decon/plot" >> ${decon_log} 2>&1
-    Rscript ${script_dir}/script/decon_step2.R --RData ${temp}/output_counts.RData \
-                        --out ${output_dir}/decon \
-                        --plotFolder ${output_dir}/decon/plot >> ${decon_log} 2>&1
+    Rscript ${script_dir}/script/decon_step2.R --RData ${temp}/output.RData \
+                        --out ${output_dir}/decon/result >> ${decon_log} 2>&1
     bash ${script_dir}/script/timer.sh -a "decon" -b ${batch} | tee -a ${general_log}
 else
     echo "Skipping decon"
 fi
 find ${output_dir} -type d -empty -name "cnvkit_withoutput_normal" -exec rmdir {} \;
 bash ${script_dir}/script/timer.sh -a "whole_pipeline" -b ${batch} | tee -a ${general_log}
-bash ${script_dir}/script/timer.sh -a "whole_pipeline" -b ${batch} -C
-bash ${script_dir}/script/timer.sh -a "whole_pipeline" -b 0 -C
+rm -r ${script_dir}/temp
